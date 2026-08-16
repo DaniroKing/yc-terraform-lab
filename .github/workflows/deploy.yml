@@ -1,0 +1,74 @@
+name: "Terraform & Ansible CI/CD"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-and-validate:
+    name: "Lint & Validate"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+        working-directory: ./terraform
+
+      - name: Terraform Init & Validate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_FILE: key.json
+          TF_VAR_folder_id: ${{ secrets.YC_FOLDER_ID }}
+          TF_VAR_cloud_id: ${{ secrets.YC_CLOUD_ID }}
+        run: |
+          echo '${{ secrets.YC_SA_JSON_CREDENTIALS }}' > key.json
+          terraform init
+          terraform validate
+        working-directory: ./terraform
+
+      - name: Install Ansible & Syntax Check
+        run: |
+          sudo apt update && sudo apt install -y ansible
+          ansible-playbook --syntax-check ansible/playbook.yml
+
+  deploy:
+    name: "Deploy Infrastructure & App"
+    needs: lint-and-validate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Terraform Init & Apply
+        env:
+          TF_VAR_folder_id: ${{ secrets.YC_FOLDER_ID }}
+          TF_VAR_cloud_id: ${{ secrets.YC_CLOUD_ID }}
+        run: |
+          echo '${{ secrets.YC_SA_JSON_CREDENTIALS }}' > key.json
+          terraform init
+          terraform apply -auto-approve
+        working-directory: ./terraform
+
+      - name: Run Ansible Playbook
+        run: |
+          sudo apt update && sudo apt install -y ansible
+          cd ansible
+          ansible-playbook -i inventory.ini playbook.yml
